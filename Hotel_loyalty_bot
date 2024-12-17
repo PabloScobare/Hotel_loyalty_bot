@@ -1,0 +1,147 @@
+import os
+from flask import Flask, request
+import telebot
+import json
+
+app = Flask(__name__)
+
+# Словник програм лояльності
+HOTEL_PROGRAMS = {
+    "Marriott Bonvoy": {
+        "styles": ["business", "luxury", "modern"],
+        "price_range": ["mid-range", "premium"],
+        "description": "Понад 7600 готелів. Преміум програма з великим покриттям."
+    },
+    "Hilton Honors": {
+        "styles": ["business", "classic", "contemporary"],
+        "price_range": ["budget", "mid-range"],
+        "description": "Більше 6500 готелів. Зручна програма для бізнес-мандрівників."
+    },
+    "IHG Rewards": {
+        "styles": ["family-friendly", "budget", "modern"],
+        "price_range": ["budget", "mid-range"],
+        "description": "Понад 5900 готелів. Найкраще для економних мандрівників."
+    },
+    "Hyatt World": {
+        "styles": ["luxury", "business", "modern"],
+        "price_range": ["mid-range", "premium"],
+        "description": "Преміум готелі з високим рівнем сервісу."
+    }
+}
+
+# Ініціалізація бота
+bot = telebot.TeleBot(os.environ['TELEGRAM_BOT_TOKEN'])
+
+# Стан користувачів
+user_states = {}
+
+def find_matching_programs(styles, price_range):
+    """Знаходження програм, що відповідають критеріям"""
+    matching_programs = []
+    for program, details in HOTEL_PROGRAMS.items():
+        style_match = any(style in details['styles'] for style in styles)
+        price_match = price_range in details['price_range']
+        
+        if style_match and price_match:
+            matching_programs.append((program, details['description']))
+    
+    return matching_programs
+
+@bot.message_handler(commands=['start'])
+def start_message(message):
+    markup = telebot.types.ReplyKeyboardMarkup(row_width=2)
+    buttons = [
+        telebot.types.KeyboardButton("💼 Діловий"),
+        telebot.types.KeyboardButton("🏖 Розслаблений"),
+        telebot.types.KeyboardButton("🌟 Розкішний"),
+        telebot.types.KeyboardButton("💰 Економний")
+    ]
+    markup.add(*buttons)
+    
+    bot.send_message(
+        message.chat.id, 
+        "Привіт! 🏨 Допоможу обрати Program Loyalty\n\nЯкий стиль подорожей вамближче?", 
+        reply_markup=markup
+    )
+    
+    # Зберігаємо стан користувача
+    user_states[message.chat.id] = {"stage": "style"}
+
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    chat_id = message.chat.id
+    
+    if chat_id not in user_states:
+        start_message(message)
+        return
+    
+    stage = user_states[chat_id].get('stage')
+    
+    style_map = {
+        "💼 Діловий": ["business"],
+        "🏖 Розслаблений": ["contemporary"],
+        "🌟 Розкішний": ["luxury"],
+        "💰 Економний": ["budget"]
+    }
+    
+    price_map = {
+        "💸 Бюджетний": "budget",
+        "🏦 Середній": "mid-range",
+        "💎 Преміум": "premium"
+    }
+    
+    if stage == 'style':
+        chosen_style = style_map.get(message.text, ["business"])
+        user_states[chat_id]["chosen_styles"] = chosen_style
+        user_states[chat_id]["stage"] = "price"
+        
+        markup = telebot.types.ReplyKeyboardMarkup(row_width=2)
+        buttons = [
+            telebot.types.KeyboardButton("💸 Бюджетний"),
+            telebot.types.KeyboardButton("🏦 Середній"),
+            telebot.types.KeyboardButton("💎 Преміум")
+        ]
+        markup.add(*buttons)
+        
+        bot.send_message(
+            chat_id, 
+            "Яка комфортна для вас цінова категорія?", 
+            reply_markup=markup
+        )
+    
+    elif stage == 'price':
+        chosen_price = price_map.get(message.text, "mid-range")
+        user_states[chat_id]["chosen_price"] = chosen_price
+        
+        styles = user_states[chat_id]["chosen_styles"]
+        price_range = user_states[chat_id]["chosen_price"]
+        
+        recommendations = find_matching_programs(styles, price_range)
+        
+        if recommendations:
+            result_message = "🏨 Рекомендовані програми лояльності:\n\n"
+            for program, description in recommendations:
+                result_message += f"• *{program}*\n{description}\n\n"
+        else:
+            result_message = "❌ На жаль, не знайдено повних збігів. Спробуйте інші параметри."
+        
+        bot.send_message(chat_id, result_message, parse_mode='Markdown')
+        del user_states[chat_id]  # Очищаємо стан
+
+@app.route('/')
+def home():
+    return "Бот готовий до роботи!"
+
+@app.route(f'/{os.environ["TELEGRAM_BOT_TOKEN"]}', methods=['POST'])
+def webhook():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "OK"
+
+def set_webhook():
+    bot.set_webhook(url=f'https://your-app-name.railway.app/{os.environ["TELEGRAM_BOT_TOKEN"]}')
+
+if __name__ == '__main__':
+    set_webhook()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
